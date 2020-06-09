@@ -111,8 +111,9 @@ process TENX_VDJ_MAP {
     data <- data %>% mutate(indices = paste("SI-GA-", indices, sep=""))
     # Split VDJ and GEX libraries if present
     data_vdj <- data %>% filter(library == "VDJ")
+    data_vdj <- data %>% mutate(library_id = paste(repoName, VDJType, sep='_'))
     data_vdj <- data_vdj %>% mutate(vdj_sequences = paste("$params.output.folder", "VDJ", 
-                                    repoName, "outs/all_contig_annotations.csv", sep="/"))
+                                    library_id, "outs/all_contig_annotations.csv", sep="/"))
     # Create samplesheet for mkfastq, and H5 and analysis sheets for VDJ analysis
     data_vdj_ss <- data_vdj %>% select(repoName, indices) %>% rename(Sample = repoName, Index = indices) 
     data_vdj_ss <- data_vdj_ss %>% add_column(Lane = '1-2') %>% select(Lane, Sample, Index)
@@ -228,12 +229,12 @@ process TENX_VDJ {
     memory = "$task.memory" =~  /\d+/
     if("$params.count.fastq_type" == "mkfastq" | "$params.count.fastq_type" == "bcl2fastq")
       """
-      cellranger vdj --id=$sample.sampleName --reference=$params.input.vdj_reference --fastqs=$sample.fastqPath \
+      cellranger vdj --id=$sample.library_id --reference=$params.input.vdj_reference --fastqs=$sample.fastqPath \
         --sample=$sample.fastqSample --localcores=$task.cpus --localmem=${memory[0]}
       """
     else if("$params.count.fastq_type" == "demux")
       """
-      cellranger vdj --id=$sample.sampleName --reference=$params.input.vdj_reference --fastqs=$sample.fastqPath \
+      cellranger vdj --id=$sample.library_id --reference=$params.input.vdj_reference --fastqs=$sample.fastqPath \
         --localcores=$task.cpus --localmem=${memory[0]}
       """
 }
