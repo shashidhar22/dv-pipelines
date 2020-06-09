@@ -90,11 +90,11 @@ process VDJMetadata {
     library(DropletUtils)
     set.seed(12357)  
     sce <- readRDS("${sce}")
-    vdj <- read_csv("${meta_file}") %>% filter(library_id == metadata(cds)\$sample & locus == "5primeVDJ")
+    vdj <- read_csv("${meta_file}") %>% filter(repoName == metadata(sce)\$Sample & str_detect(locus, "VDJ"))
     vdj_table <- colData(sce) %>% as_tibble()
 
     collapseClonotype <- function(clonotypes, vdj_type) {
-      if (vdj_type == NULL) {
+      if (is.null(vdj_type)) {
       clonotypes <- clonotypes %>% filter(high_confidence == TRUE & is_cell == TRUE & productive == TRUE) %>% 
               group_by(barcode) %>% summarize(is_cell = first(is_cell), contig_id = paste(contig_id, collapse = ";"), 
                                               high_confidence = first(high_confidence), `length` = paste(`length`, collapse = ";"),
@@ -123,13 +123,20 @@ process VDJMetadata {
       clonotypes <- collapseClonotype(clonotypes, vdj_type)
       return(clonotypes)
     }
-    clonotypes <- map2(vdj\$vdj_sequences, vdj\$VDJType, mergeVDJ) %>% reduce(rbind) %>% collapseClonotype(,vdj_type=NULL)
-    vdj_table <- left_join(vdj_table, clonotypes, by=c("Barcode" = "barcode"))
-    doublet_barcode <- vdj_table %>% filter(str_detect(cell_type, "B cell") & str_detect(cell_type, "T Cell")) %>% select(Barcode) %>% add_column(Method = "VDJ data")
-    metadata(sce)\$doublet_barcodes <- doublet_barcode
-    metadata(sce)\$vdj_table <- vdj_table
-    vdj_raw <- read_csv(vdj_file)
-    metadata(sce)\$vdj_raw <- vdj_raw 
+
+    if (dim(vdj)[1] == 0) {
+      metadata(sce)\$doublet_barcodes <- NULL
+      metadata(sce)\$vdj_table <- NULL
+      metadata(sce)\$vdj_raw <- NULL
+    } else {
+      clonotypes <- map2(vdj\$vdj_sequences, vdj\$VDJType, mergeVDJ) %>% reduce(rbind) %>% collapseClonotype(vdj_type=NULL)
+      vdj_table <- left_join(vdj_table, clonotypes, by=c("Barcode" = "barcode"))
+      doublet_barcode <- vdj_table %>% filter(str_detect(cell_type, "B cell") & str_detect(cell_type, "T Cell")) %>% select(Barcode) %>% add_column(Method = "VDJ data")
+      metadata(sce)\$doublet_barcodes <- doublet_barcode
+      metadata(sce)\$vdj_table <- vdj_table
+      vdj_raw <- vdj\$vdj_sequences %>% map(read_csv) %>% reduce(rbind)
+      metadata(sce)\$vdj_raw <- vdj_raw 
+    }
     saveRDS(sce, "${sce.getName()}")
     """
 
@@ -197,12 +204,12 @@ process writeSCE{
     size.factors <- libsizes/mean(libsizes)
     logcounts(sce) <- as.matrix(log2(t(t(counts)/size.factors) + 1))
     colnames(sce) <- sce\$Barcode
-    Misc(sce, slot="perCellQCMetrics") <- metadata(sce)\$perCellQCMetrics_filtered
-    Misc(sce, slot="study_info") <- metadata(sce)\$study_info
-    Misc(sce, slot="doublet_barcode") <- metadata(sce)\$doublet_barcode
-    Misc(sce, slot="vdj_raw") <- metadata(sce)\$vdj_raw
-    Misc(sce, slot="vdj_raw_keys") <- metadata(sce)\$vdj_raw_keys
     seu_cds <- as.Seurat(sce, counts = "counts", data = "logcounts")
+    Misc(seu_cds, slot="perCellQCMetrics") <- metadata(sce)\$perCellQCMetrics_filtered
+    Misc(seu_cds, slot="study_info") <- metadata(sce)\$study_info
+    Misc(seu_cds, slot="doublet_barcode") <- metadata(sce)\$doublet_barcode
+    Misc(seu_cds, slot="vdj_raw") <- metadata(sce)\$vdj_raw
+    Misc(seu_cds, slot="vdj_raw_keys") <- metadata(sce)\$vdj_raw_keys
     saveRDS(seu_cds, "${sample}_filtered_seurat_cds.rds")
     """    
 }
