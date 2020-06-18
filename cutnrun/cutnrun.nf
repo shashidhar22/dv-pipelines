@@ -4,6 +4,8 @@ params.reads = "$params.input.fastq_path/*/*_L00{1,2}_R{1,2}_00{1,2,3,4}.fastq.g
 fastq_path = Channel.fromFilePairs(params.reads, size: -1)
 fasta_path = Channel.fromPath(params.input.fasta_path)
 out_path = Channel.fromPath(params.output.folder)
+chrom_path = Channel.fromPath(params.input.chrom_path)
+cutsite_path = Channel.fromPath(params.input.cutsite_path)
 config_path = Channel.fromPath(params.input.config_path)
 
 process combineFastq {
@@ -72,7 +74,7 @@ trim_out.into{align_path; postqc_path}
 
 process postFastQC {
     echo false
-    publishDir "$params.output.folder/postFastqQC/${sample}", mode : "move"
+    publishDir "$params.output.folder/postFastqQC/${sample}", mode : "copy"
     label 'gizmo'
     scratch "$task.scratch"
     module "FastQC"
@@ -121,8 +123,8 @@ process processAlignments {
     output:
         tuple val(sample), path("${sample}.bam"), path("${sample}.bai"), path("${sample}_*.txt") into postal_out
         path "${sample}.bam" into config_out
+
     script:
-        group = ${sample} =~ /
         """
         gatk SortSam -I=${sam_path} -O=${sample}_SR.bam -SO=coordinate --CREATE_INDEX=true -R=$params.input.fasta_path
         gatk MarkDuplicates -I=${sample}_SR.bam -M=${sample}_dmetrics.txt -O=${sample}.bam --CREATE_INDEX=true -R=$params.input.fasta_path
@@ -131,22 +133,121 @@ process processAlignments {
     
 }
 
-process callPeaks { //.splitCsv(header: true, quote: '\"')
+process callPeaks { 
     echo false
-    publishDir "$params.output.folder/peakCalls/${sample}", mode : "copy"
     label 'gizmo'
+    publishDir "$params.output.folder/peakCalls", mode : "copy"
     scratch "$task.scratch"
     module "MACS2"
+
     input:
         each sample from config_path.splitCsv(header: true, quote: '\"')
         val results from postal_out.collect()
     output:
-
+        tuple val("$sample.sample"+"_"+"$sample.cond"+"_"+"$sample.cont"), path("$sample.sample"+"_"+"$sample.cond"+"_"+"$sample.cont"+"_treat_pileup.bdg"), path("$sample.sample"+"_"+"$sample.cond"+"_"+"$sample.cont"+"_control_lambda.bdg") into bdg_out
 
     script:
         """
-        macs2 callpeak -t $sample.condition -c $sample.control -B --SPMR --broad -g hs -n $sample.sample_$sample.cond_$sample.cont
+        macs2 callpeak -t $sample.condition -c $sample.control -B --SPMR --broad -g hs -n $sample.sample"_"$sample.cond"_"$sample.cont
         """
 }
 
-aling_out.group_by("$params.output.folder/alignedReads/*.bam", size:-1).println()
+
+process callFR {
+    echo false
+    publishDir "$params.output.folder/bedCompare", mode : "copy"
+    label 'gizmo'
+    scratch "$task.scratch"
+    module "MACS2"
+
+    input:
+        set val(sample), path(treat), path(lambda) from bdg_out
+    
+    output:
+        tuple val(sample), path("${sample}_FE.bdg"), path("${sample}_logLR.bdg") into bdgc_out
+
+    script:
+        """
+        macs2 bdgcmp -t ${treat} -c ${lambda} -o ${sample}_FE.bdg -m FE
+        macs2 bdgcmp -t ${treat} -c ${lambda} -o ${sample}_logLR.bdg -m logLR -p 0.00001
+        """
+}
+
+process creatBigWig {
+    echo false
+    publishDir "$params.output.folder/bigWigs", mode : "copy"
+    label 'gizmo'
+    scratch "$task.scratch"
+    module "bedtools"
+    module "ucsc"
+
+    input:
+        set val(sample), path(fe_path), path(llr_path) from bdgc_out
+        each cl_path from chrom_path
+    
+    output:
+        tuple val(sample), path("${sample}_FE.bw"), path("${sample}_logLR.bw") into bwig_out
+
+    script:
+        """
+        bedtools slop -i ${fe_path} -g ${cl_path} -b 0 > ${fe_path}.genome 
+        bedClip ${fe_path}.genome ${fe_path} ${fe_path}.clip
+        LC_COLLATE=C sort -k1,1 -k2,2n ${fe_path}.clip > ${fe_path}.sort.clip
+        bedGraphToBigWig ${fe_path}.sort.clip ${cl_path} ${sample}_FE.bw
+        rm -f ${fe_path}.clip ${fe_path}.sort.clip
+
+        bedtools slop -i ${llr_path} -g ${cl_path} -b 0 > ${llr_path}.genome 
+        bedClip ${llr_path}.genome ${llr_path} ${llr_path}.clip
+        LC_COLLATE=C sort -k1,1 -k2,2n ${llr_path}.clip > ${llr_path}.sort.clip
+        bedGraphToBigWig ${llr_path}.sort.clip ${cl_path} ${sample}_logLR.bw
+        rm -f ${llr_path}.clip ${llr_path}.sort.clip
+        """
+}
+
+
+
+process filterBigWig {
+    echo false
+    publishDir "$params.output.folder/finalBW", mode : "copy"
+    label 'gizmo'
+    scratch "$task.scratch"
+    module "R/3.6.2-foss-2016b-fh1"
+
+    input:
+        set val(sample), path(fe_path), path(llr_path) from bwig_out
+        each cut_site from cutsite_path
+    
+    output:
+        tuple val(sample), path("${fe_path.getSimpleName()}_cutSite.bw"), path("${llr_path.getSimpleName()}_cutSite.bw") into fwig_out
+
+    script:
+        """
+        #!/usr/bin/env Rscript
+        library(rtracklayer)
+        bigWigs <- import(\"${fe_path}\")
+        bedFile <- import(\"${cut_site}\")
+        overlap <- subsetByOverlaps(bedFile, bigWigs, type="any") 
+        export(overlap, \"${fe_path.getSimpleName()}_cutSite.bw\", format="BigWig")
+        bigWigs <- import(\"${llr_path}\")
+        bedFile <- import(\"${cut_site}\")
+        overlap <- subsetByOverlaps(bedFile, bigWigs, type="any") 
+        export(overlap, \"${llr_path.getSimpleName()}_cutSite.bw\", format="BigWig")
+        """
+}
+
+
+/*workflow.onComplete {
+
+    def msg = """\
+        Pipeline execution summary
+        ---------------------------
+        Completed at: ${workflow.complete}
+        Duration    : ${workflow.duration}
+        Success     : ${workflow.success}
+        workDir     : ${workflow.workDir}
+        exit status : ${workflow.exitStatus}
+        """
+        .stripIndent()
+
+    sendMail(to: 'sravisha@fredhutch.org', subject: 'CutNRun nextflow execution', body: msg)
+}*/
