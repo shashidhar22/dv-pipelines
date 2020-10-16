@@ -1,82 +1,97 @@
 trb_files = Channel.fromPath(params.input.trb_path)
+meta_file = Channel.fromPath(params.input.meta_path)
+
+trb_files.into{gliph_files; net_files; deep_files; sonia_files}
 
 process gliph_prepare {
   echo false
-  publishDir "$params.output.folder/gliph/input/", mode : "copy"
-  label 'gizmo'
-  scratch "$task.scratch"
-  module 'R/3.6.2-foss-2016b-fh1'
+  publishDir "$params.output.interm_folder", mode : "copy"
+  label 'local'
+  module 'R/4.0.2-foss-2019b'
   
   input:
-    path tcr_path from trb_files
+    val tcr_path from gliph_files
+    val meta_data from meta_file
   output:
-    path "*.tsv" into trb_byLength
+    path "*.tsv" into study_trb
   script:
     """
     #!/usr/bin/env Rscript
-    .libPaths(c("/home/sravisha/R/x86_64-pc-linux-gnu-library/3.6", .libPaths()))  
+    library(LymphoSeq2)
+    library(readxl)
     library(tidyverse)
-    library(devtools)
-    library(randomcoloR)
-    library(patchwork)
-    library(ggalluvial)
-    devtools::load_all("/home/sravisha/projects/LymphoSeq2")
-
-    createGliphByLength <- function(sample_table) {
-        sample <- sample_table %>% 
-                  pull(repertoire_id) %>% 
-                  unique()
-        sample_table <- sample_table %>% 
-                        mutate(length = nchar(junction_aa)) %>%
-                        filter(length >= 7) %>%
-                        group_by(length) %>%
-                        group_split(keep=TRUE) %>%
-                        map(~ writeGliph(.x, sample)) 
-
+    
+    createGliph <- function(atable) {
+      patient_name <- atable %>%
+                      pull(patientID) %>%
+                      unique()
+      out_file <- paste(patient_name, "tsv", sep = ".")
+      gtable <- atable %>%
+                select(junction_aa, v_call, j_call, sampleID) %>%
+                rename(Sample = sampleID,
+                       TRBV = v_call,
+                       TRBJ = j_call,
+                       CdR3b = junction_aa)
+      write_tsv(gtable, out_file)
     }
-
-    writeGliph <- function(sample_table, sample) {
-        length <- sample_table\$length[1]
-        out_path <- paste(paste(sample, length, sep="_"), "tsv", sep=".")
-        sample_table <- sample_table %>% 
-                        mutate(Sample = repertoire_id) %>% 
-                        select(junction_aa, Sample) %>% 
-                        rename(CDR3b = junction_aa)
-        write_tsv(sample_table, out_path)
-    }
-
-    data_path <- c(\"${tcr_path}\")
-    stable <- LymphoSeq2::readImmunoSeq(data_path)
-    atable <- LymphoSeq2::productiveSeq(stable)
-    atable <- atable %>% 
-              group_by(repertoire_id) %>% 
-              group_split(keep=TRUE) %>% 
-              map(createGliphByLength)
+    study_table <- LymphoSeq2::readImmunoSeq(\"${tcr_path}\")
+    meta_table <- readxl::read_excel(\"${meta_data}\", sheet = "CFAR_Sample_info")
+    meta_table <- meta_table %>%
+                  group_by(patientID) %>%
+                  arrange(dateTCR) %>%
+                  filter(!is.na(dateTCR)) %>%
+                  filter(patientID == "1218")      
+    atable <- LymphoSeq2::productiveSeq(study_table) 
+    atable <- left_join(meta_table, atable, by = c("sampleID" = "repertoire_id"))
+    atable %>% 
+    group_by(patientID) %>%
+    group_split() %>%
+    map(createGliph)
     """
 }
 
 
 process gliph_analyze {
   echo false 
-  publishDir "$params.output.folder/gliph/output/", mode: 'copy'
+  publishDir "$params.output.output_folder", mode: 'copy'
   label 'gizmo'
   scratch "$task.scratch"
   stageInMode 'copy'
   module "Perl"
 
   input:
-    each tcr_length from trb_byLength.collect().flatten()
+    path patient from study_trb
     
   output:
-    path "${tcr_length.getName()}-*.txt" into gliph_clonotypes
+    tuple val(sample), path("${patient.getName()}-convergence-groups.txt") into gliph_clonotypes
 
   script:
-    sample = tcr_length.getSimpleName()    
+    sample = patient.getSimpleName() 
     """
-    perl /home/sravisha/software/gliph/gliph/bin/gliph-group-discovery.pl --tcr ${tcr_length} 
+    perl /home/sravisha/software/gliph/gliph/bin/gliph-group-discovery.pl --tcr ${patient} 
     """
 
 }
+
+/*process gliphCombine {
+  echo false 
+  publishDir "$params.output.folder/gliphByPT/combine/${sample}", mode: 'copy'
+  label 'gizmo'
+  scratch "$task.scratch"
+  stageInMode 'copy'
+  module "Perl"
+
+  input:
+    set val(sample), path(tcr_paths) from gliph_clonotypes.groupTuple()
+  output:
+    path "${sample}-convergence-groups.txt" into gliph_combined
+
+  script:
+    """
+    cat *-convergence-groups.txt > ${sample}-convergence-groups.txt
+    """
+}*/
+
 
 workflow.onComplete {
 
