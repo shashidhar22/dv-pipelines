@@ -16,9 +16,10 @@ cds_path.into{mon_combine; mon_data}
 //Combine CDS object and run monocle cluster
 process MON_COMBINE {
   echo false
-  scratch "$task.scratch"
-  module "R/3.6.1-foss-2016b-fh2"
-  label "gizmo_largenode"
+  publishDir "$params.input.cds_path"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label "mid_mem"
   
   input:
     val cds_list from mon_combine.collect()
@@ -52,26 +53,27 @@ process MON_COMBINE {
     }
     combine_vdj <- function(cds) {
       sample <- metadata(cds)\$Sample
-      if (metadata(cds)\$vdj_raw != NULL) {
-        metadata(cds)\$vdj_raw <- metadata(cds)\$vdj_raw %>% mutate(Sample = sample)
+      if (metadata(cds)\$vdj_table != NULL) {
+        metadata(cds)\$vdj_table <- metadata(cds)\$vdj_table %>% mutate(Sample = sample)
       }
       info <- metadata(cds)\$study_info
       return(info)
     }
     metadata(merged)\$perCellQCMetrics <- cds_list %>% map(combine_metrics) %>% purrr::reduce(rbind)
     metadata(merged)\$study_info <- cds_list %>% map(combine_info) %>% purrr::reduce(rbind)
-    metadata(merged)\$vdj_raw <- cds_list %>% map(combine_vdj) %>% purrr::reduce(rbind)        
+    #metadata(merged)\$vdj_raw <- cds_list %>% map(combine_vdj) %>% purrr::reduce(rbind)        
     saveRDS(merged, "${study_name}_aggregated.rds")
     """
 }
+
 //Combine aggregated and sample channels
 mon_path = mon_data.mix( mon_aggr )
 //Preprocess cells
 process MON_PREPROCESS {
   echo false
-  scratch "$task.scratch"
-  module "R/3.6.1-foss-2016b-fh2"
-  label "gizmo_largenode"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label "mid_mem"
   
   input:
     each cds from mon_path
@@ -106,9 +108,9 @@ mon_prep.choice(mon_merged, mon_samples) { a -> a =~ /^.*_aggregated.rds/ ? 0 : 
 // Batch correct merged CDS object
 process MON_BATCHCORRECT {
   echo false
-  scratch "$task.scratch"
-  module "R/3.6.1-foss-2016b-fh2"
-  label "gizmo_largenode"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label "mid_mem"
   
   input:
     each cds from mon_merged
@@ -138,9 +140,9 @@ mon_recombine = mon_samples.mix(mon_aligned)
 // Reduce dimensions
 process MON_REDUCEDIMS {
   echo false
-  scratch "$task.scratch"
-  module "R/3.6.1-foss-2016b-fh2"
-  label "gizmo_largenode"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label "mid_mem"
   
   input:
     each cds from mon_recombine
@@ -168,9 +170,9 @@ process MON_REDUCEDIMS {
 //CLuster cells
 process MON_CLUSTER {
   echo false
-  scratch "$task.scratch"
-  module "R/3.6.1-foss-2016b-fh2"
-  label "gizmo_largenode"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label "mid_mem"
   
   input:
     each cds from mon_reduce
@@ -178,7 +180,7 @@ process MON_CLUSTER {
     each cnumber from cluster_number
 
   output:
-    path "${filename}_${uuid}.rds" into mon_cluster
+    path "${filename}.rds" into mon_cluster
 
   script:
     filename = cds.getSimpleName() - ~/_filtered_monocle3_cds$/
@@ -195,7 +197,7 @@ process MON_CLUSTER {
     cds <- cluster_cells(cds, reduction_method = reduction_method, k = ${cnumber}, cluster_method = "${cmethod}")
     metadata(cds)\$clustering_params <- metadata(cds)\$clustering_params %>% add_column(nearest_neighbors = c(${cnumber}), 
                                         clustering_method = c("${cmethod}"), uuid = c("${uuid}"))
-    saveRDS(cds, "${filename}_${uuid}.rds")
+    saveRDS(cds, "${filename}.rds")
     """
 }
 //Duplicate CDS channel
@@ -204,10 +206,10 @@ mon_cluster.into{mon_plot; mon_gather; mon_write}
 //Plot cluster scatter plot in UMAP/tSNE dimensions
 process MON_PLOT {
   echo false
-  scratch "/fh/scratch/delete30/warren_h/sravisha/"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
   publishDir "$params.output.folder/Monocle/Cluster/Figures" , mode : 'move'
-  module 'R/3.6.1-foss-2016b-fh2'
-  label 'gizmo'
+  label 'low_mem'
   input:
     each cds from mon_plot
 
@@ -224,7 +226,7 @@ process MON_PLOT {
     cds <- readRDS("${cds}")
     reduction_method <- metadata(cds)\$clustering_params\$reduction_method[1]
     uuid <- metadata(cds)\$clustering_params\$uuid[1]
-    sample = metadata(cds)\$Sample 
+    sample <- metadata(cds)\$Sample
     if (str_detect(sample, "aggregated")) {
       fig <- plot_cells(cds, reduction_method=reduction_method, color_cells_by="Sample")  
     } else {
@@ -239,7 +241,9 @@ process MON_PLOT {
 process MON_GATHER {
   echo false
   publishDir "$params.output.folder/Monocle/Cluster/Metadata" , mode : 'move'
-  module 'R/3.6.1-foss-2016b-fh2'
+  label 'low_mem'
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
 
   input:
     val cds_list from mon_gather.collect()
@@ -267,8 +271,9 @@ process MON_GATHER {
 process MON_WRITE {
   echo false
   publishDir "$params.output.folder/Monocle/Cluster/CDS" , mode : 'move'
-  module 'R/3.6.1-foss-2016b-fh2'
-  label 'gizmo'
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
+  label 'low_mem'
 
   input:
     each cds from mon_write

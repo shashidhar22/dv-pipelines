@@ -1,5 +1,43 @@
 #!/usr/bin/env nextflow
 
+/*
+========================================================================================
+                         Warren lab Cellranger pipeline
+========================================================================================
+ Warren lab Cellranger pipeline
+----------------------------------------------------------------------------------------
+*/
+
+
+def helpMessage() {
+    log.info"""
+    Usage:
+    The typical command for running the pipeline is as follows:
+    nextflow run cellranger.nf -c '10Xcellranger.config'
+    The it is recommended to use a config file to run this pipeline, as mentioned in the README. 
+    Alternatively, the following parameters need to be provided to run this workflow.
+    Alternate arguments: 
+      --metadata                       Path to metadata file for single cell cellranger run.
+      --gex_reference                  Path to cellranger GEX reference folder
+      --vdj_reference                  Path to cellranger VDJ reference folder
+      --gex_fastq_paths                Path to 10X GEX FASTQ files obtained from cellranger mkfastq, demux, or Illumina bcl2fastq
+      --vdj_fastq_paths                Path to 10X VDJ FASTQ files obtained from cellranger mkfastq, demux, or Illumina bcl2fastq
+      --study_id                       Unique study ID for cellranger run
+      --mode                           Cellranger aggr normalization mode [mapped, none]
+      --run_gex                        Boolean value to indicate whether cellranger count and aggr should be run on the dataset
+      --run_vdj                        Boolean value to indicate whether cellranger VDJ should be run on the dataset
+      --fastq_type                     Type of demultiplexing used to generate the FASTQ reads ['mkfastq', 'bcl2fastq', 'demux'] 
+      --output_folder                  Path to output folder to store results
+    """.stripIndent()
+}
+
+//Print help and exit
+if (params.help){
+    helpMessage()
+    exit 0
+}
+
+
 //Input parameters
 metadata = Channel.fromPath(params.input.metadata)
 gex_reference = Channel.fromPath(params.input.gex_reference)
@@ -22,8 +60,9 @@ study_id.into{gex_study_id; vdj_study_id}
 
 process TENX_GEX_MAP {
   echo false
+  label 'low_mem'
   publishDir "$params.output.folder/Metadata", mode : 'copy'
-  module 'R/3.6.1-foss-2016b-fh2'
+  module 'R/4.0.2-foss-2019b'
   
   input:
     path meta_file from gex_metadata
@@ -43,39 +82,51 @@ process TENX_GEX_MAP {
     #!/usr/bin/env Rscript
     library(tidyverse)
     # Metadata file provide should have the 12 mandatory fields mentioned in the README 
-    data <- read_csv("${meta_file}")
-    data <- data %>% filter(platform == '10XGenomics' & str_detect(locus, "GEX"))
-    data <- data %>% mutate(library= str_extract(locus, "GEX"))
-    data <- data %>% mutate(fastqType = "$params.count.fastq_type")
+    data <- readr::read_csv("${meta_file}")
+    data <- data %>% 
+            dplyr::filter(platform == '10XGenomics' & str_detect(locus, "GEX"))
+    data <- data %>% 
+            dplyr::mutate(library= "GEX")
+    data <- data %>% 
+            dplyr::mutate(fastqType = "$params.count.fastq_type")
     # Account for folder structure differences between mkfastq and demux
     if ("$params.count.fastq_type" == "mkfastq" | "$params.count.fastq_type" == "bcl2fastq") {
-      data <- data %>% mutate(fastqSample = sampleName)
-      data <- data %>% mutate(fastqPath = "${fastq_path}")
+      data <- data %>% 
+              dplyr::mutate(fastqSample = repoName,
+                            fastqPath = "${fastq_path}")
     } else if ("$params.count.fastq_type" == "demux") {
-      data <- data %>% mutate(fastqSample = paste(sampleName, "demux_id", sep="/"))
-      data <- data %>% mutate(fastqFolder = "${fastq_path}")
-      data <- data %>% mutate(fastqPath =  paste(fastqFolder, fastqSample, sep="/"))
+      data <- data %>% 
+              dplyr::mutate(fastqSample = paste(repoName, "demux_id", sep="/"), 
+                            fastqFolder = "${fastq_path}",
+                            fastqPath =  paste(fastqFolder, fastqSample, sep="/"))
     }
     data <- data %>% mutate(indices = paste("SI-GA-", indices, sep=""))
     # Split VDJ and GEX libraries if present
     data_gex <- data %>% filter(library == "GEX")
     data_gex <- data_gex %>% mutate(molecule_h5 = paste("$params.output.folder", "Counts", 
-                                    repoName, "outs/molecule_info.h5", sep="/"))
+                                    sampleName, "outs/molecule_info.h5", sep="/"))
     # Create samplesheet for mkfastq, and H5 and analysis sheets for VDJ analysis
-    data_gex_h5 <- data_gex %>% rename(library_id = repoName)
-    data_gex_h5 <- data_gex_h5 %>% select(library_id, molecule_h5, everything())
-    data_gex_ss <- data_gex %>% select(repoName, indices) %>% rename(Sample = repoName, Index = indices) 
-    data_gex_ss <- data_gex_ss %>% add_column(Lane = '1-2') %>% select(Lane, Sample, Index)
+    data_gex_h5 <- data_gex %>% 
+                   dplyr::rename(library_id = sampleName)
+    data_gex_h5 <- data_gex_h5 %>% 
+                   dplyr::select(library_id, molecule_h5, everything())
+    data_gex_ss <- data_gex %>%  
+                   dplyr::select(repoName, indices) %>% 
+                   dplyr::rename(Sample = repoName, Index = indices) 
+    data_gex_ss <- data_gex_ss %>% 
+                   dplyr::mutate(Lane = '1-2') %>% 
+                   dplyr::select(Lane, Sample, Index)
     # Write metadata files
-    write_csv(data_gex_h5, "GEX_h5_samplesheet.csv")
-    write_csv(data_gex_ss, "GEX_samplesheet.csv")
+    readr::write_csv(data_gex_h5, "GEX_h5_samplesheet.csv")
+    readr::write_csv(data_gex_ss, "GEX_samplesheet.csv")
     """
 }
 
 process TENX_VDJ_MAP {
   echo false
+  label 'low_mem'
   publishDir "$params.output.folder/Metadata", mode : 'copy'
-  module 'R/3.6.1-foss-2016b-fh2'
+  module 'R/4.0.2-foss-2019b'
   
   input:
     path meta_file from vdj_metadata
@@ -95,28 +146,43 @@ process TENX_VDJ_MAP {
     #!/usr/bin/env Rscript
     library(tidyverse)
     # Metadata file provide should have the 12 mandatory fields mentioned in the README 
-    data <- read_csv('${meta_file}')
-    data <- data %>% filter(platform == '10XGenomics' & str_detect(locus, "VDJ"))
-    data <- data %>% mutate(library = str_extract(locus, "VDJ"))
-    data <- data %>% mutate(fastqType = "$params.count.fastq_type")
+    data <- readr::read_csv('${meta_file}')
+    data <- data %>% 
+            dplyr::filter(platform == '10XGenomics' & str_detect(locus, "VDJ"))
+    data <- data %>% 
+            dplyr::mutate(library = "VDJ", 
+                          fastqType = "$params.count.fastq_type")
     # Account for folder structure differences between mkfastq and demux
     if ("$params.count.fastq_type" == "mkfastq" | "$params.count.fastq_type" == "bcl2fastq") {
-      data <- data %>% mutate(fastqSample = sampleName)
-      data <- data %>% mutate(fastqPath = "${fastq_path}")
+      data <- data %>% 
+              dplyr::mutate(fastqSample = repoName, 
+                            fastqPath = "${fastq_path}")
     } else if ("$params.count.fastq_type" == "demux") {
-      data <- data %>% mutate(fastqSample = paste(sampleName, "demux_id", sep="/"))
-      data <- data %>% mutate(fastqFolder = "${fastq_path}")
-      data <- data %>% mutate(fastqPath =  paste(fastqFolder, fastqSample, sep="/"))
+      data <- data %>% 
+              dplyr::mutate(fastqSample = paste(repoName, "demux_id", sep="/"), 
+                            fastqFolder = "${fastq_path}", 
+                            fastqPath =  paste(fastqFolder, fastqSample, sep="/"))
     }
-    data <- data %>% mutate(indices = paste("SI-GA-", indices, sep=""))
+    data <- data %>% 
+            dplyr::mutate(indices = paste("SI-GA-", indices, sep=""))
     # Split VDJ and GEX libraries if present
-    data_vdj <- data %>% filter(library == "VDJ")
-    data_vdj <- data %>% mutate(library_id = paste(repoName, VDJType, sep='_'))
-    data_vdj <- data_vdj %>% mutate(vdj_sequences = paste("$params.output.folder", "VDJ", 
-                                    library_id, "outs/all_contig_annotations.csv", sep="/"))
+    data_vdj <- data %>% 
+                dplyr::filter(library == "VDJ")
+    data_vdj <- data %>% 
+                dplyr::mutate(library_id = paste(sampleName, VDJType, sep='_'))
+    data_vdj <- data_vdj %>% 
+                dplyr::mutate(vdj_sequences = paste("$params.output.folder", 
+                                                    "VDJ", 
+                                                    library_id, 
+                                                    "outs/airr_rearrangement.tsv", 
+                                                    sep="/"))
     # Create samplesheet for mkfastq, and H5 and analysis sheets for VDJ analysis
-    data_vdj_ss <- data_vdj %>% select(repoName, indices) %>% rename(Sample = repoName, Index = indices) 
-    data_vdj_ss <- data_vdj_ss %>% add_column(Lane = '1-2') %>% select(Lane, Sample, Index)
+    data_vdj_ss <- data_vdj %>% 
+                   dplyr::select(repoName, indices) %>% 
+                   dplyr::rename(Sample = repoName, Index = indices) 
+    data_vdj_ss <- data_vdj_ss %>% 
+                   dplyr::mutate(Lane = '1-2') %>% 
+                   dplyr::select(Lane, Sample, Index)
     # Write metadata files
     write_csv(data_vdj_ss, "VDJ_samplesheet.csv")
     write_csv(data_vdj, "VDJ_analysis_samplesheet.csv")
@@ -129,9 +195,8 @@ gex_h5sheet.into {count_gex_h5sheet; aggr_gex_h5sheet}
 process TENX_COUNT {
   echo false 
   publishDir "$params.output.folder/Counts" , mode : 'copy'
-  label 'gizmo_meganode'
-  module 'cellranger'
-  scratch "$task.scratch"
+  label 'mid_mem'  
+  module 'CellRanger/4.0.0'
 
   input:
     each sample from count_gex_h5sheet.splitCsv(header: true, quote: '\"')
@@ -139,7 +204,7 @@ process TENX_COUNT {
   
   output:
     path "${sample.library_id}" into count_path
-    val task.exitStaus into count_status
+    val task.exitStatus into count_status
 
   when:
     run_count == true
@@ -150,7 +215,7 @@ process TENX_COUNT {
         """
         cellranger count --id=$sample.library_id --transcriptome=$params.input.gex_reference \
           --fastqs=$sample.fastqPath --sample=$sample.fastqSample --expect-cells=$sample.expected_cells \
-          --chemistry=$sample.chemistry --localcores=$task.cpus --localmem=${memory[0]}
+          --localcores=$task.cpus --localmem=${memory[0]}
         """
     else if("$params.count.fastq_type" == "demux")
         """
@@ -163,9 +228,8 @@ process TENX_COUNT {
 process TENX_AGGR {
   echo false
   publishDir "$params.output.folder/Counts" , mode : 'copy'
-  label 'gizmo_largenode'
-  module 'cellranger'
-  scratch "$task.scratch"
+  label 'mid_mem'
+  module 'CellRanger/4.0.0'
 
   input:
     path samplesheet from aggr_gex_h5sheet
@@ -188,9 +252,8 @@ process TENX_AGGR {
 process TENX_MATRIX {
   echo false
   publishDir "$params.output.folder/Counts/${aggr_out}/out/filtered_feature_bc_matrix" , mode : 'copy'
-  module 'cellranger'
-  label 'gizmo'
-  scratch "$task.scratch"
+  module 'CellRanger/4.0.0'
+  label 'low_mem'
 
   input:
     path aggr_out from aggr_path
@@ -211,16 +274,15 @@ process TENX_MATRIX {
 process TENX_VDJ {
   echo false
   publishDir "$params.output.folder/VDJ" , mode : 'copy'
-  module 'cellranger'
-  label 'gizmo_meganode'
-  scratch "$task.scratch"
+  module 'CellRanger/4.0.0'
+  label 'mid_mem'
 
   input:
     each sample from vdj_analysissheet.splitCsv(header: true, quote: '\"') 
     val analyze from ana_vdj
 
   output:
-    path "${sample.sampleName}"
+    path "${sample.library_id}"
 
   when:
     analyze == true
@@ -237,4 +299,21 @@ process TENX_VDJ {
       cellranger vdj --id=$sample.library_id --reference=$params.input.vdj_reference --fastqs=$sample.fastqPath \
         --localcores=$task.cpus --localmem=${memory[0]}
       """
+}
+
+
+workflow.onComplete {
+
+    def msg = """\
+        Pipeline execution summary
+        ---------------------------
+        Completed at: ${workflow.complete}
+        Duration    : ${workflow.duration}
+        Success     : ${workflow.success}
+        workDir     : ${workflow.workDir}
+        exit status : ${workflow.exitStatus}
+        """
+        .stripIndent()
+
+    sendMail(to: 'sravisha@fredhutch.org', subject: 'Cellranger pipeline execution', body: msg)
 }

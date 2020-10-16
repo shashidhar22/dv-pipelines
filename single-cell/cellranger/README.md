@@ -42,18 +42,18 @@ The parameters file is divided into four sections.
 
       The metadata file outlines all the library information for the given study and must contain the columns shown in the example below. Any additional columns listed in the file will be added to the SingleCellExperiment object column data in later workflows. 
 
-    | repoName | sampleName | patientID | expected_cells | chemistry | nucliecAcid | locus | platform | indices | sortingCT | tissueType | VDJType
-    -|----------|------------|-----------|----------------|-----------|-------------|-------|----------|---------|-----------|------------|--------
-    | S1_Monocytes | Monocytes | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | A1 | CD14pMonocytes | PBMC | NA
-    S1_Bcells | Bcells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | A2 | CD19PBCells | PBMC | NA
-    S1_Progenitor | Progenitor | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | E1 | CD34pCells | PBMC | NA
-    S1_HelperTCells | HelperTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | E2 | CD4pHelperTCells | PBMC | NA
-    S1_RegulatoryTCells | RegulatoryTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | D1 | CD4p_CD25pRegulatoryCells | PBMC | NA
-    S1_NaiveTCells | NaiveTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | D2 | CD4p_CD45RAp_CD25nNaiveTCells | PBMC | NA
-    S1_MemoryTCells | MemoryTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | B1 | CD4p_CD45ROpMemoryTCells | PBMC | NA
-    S1_NKCells | NKCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | B2 | CD56pNKCells | PBMC | NA
-    S1_CytotoxicTCells | CytotoxicTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | G1 | CD8pCytotoxicTCells | PBMC | NA
-    S1_NaiveCytotoxicTCells | NaiveCytotoxicTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | G2 | CD8p_CD45RApNaiveCytotoxicTCells | PBMC | NA
+    | repoName | sampleName | patientID | expected_cells | chemistry | nucliecAcid | locus | platform | indices | sortingCT | tissueType | VDJType | Batch |
+    |----------|------------|-----------|----------------|-----------|-------------|-------|----------|---------|-----------|------------|--------|-------|
+    | S1_Monocytes | Monocytes | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | A1 | CD14pMonocytes | PBMC | NA | B1 |
+    | S1_Bcells | Bcells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | A2 | CD19PBCells | PBMC | NA | B1 |
+    | S1_Progenitor | Progenitor | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | E1 | CD34pCells | PBMC | NA | B1 |
+    | S1_HelperTCells | HelperTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | E2 | CD4pHelperTCells | PBMC | NA | B1 |
+    | S1_RegulatoryTCells | RegulatoryTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | D1 | CD4p_CD25pRegulatoryCells | PBMC | NA | B1 |
+    | S1_NaiveTCells | NaiveTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | D2 | CD4p_CD45RAp_CD25nNaiveTCells | PBMC | NA | B1 |
+    | S1_MemoryTCells | MemoryTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | B1 | CD4p_CD45ROpMemoryTCells | PBMC | NA | B1 |
+    | S1_NKCells | NKCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | B2 | CD56pNKCells | PBMC | NA | B1 |
+    | S1_CytotoxicTCells | CytotoxicTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | G1 | CD8pCytotoxicTCells | PBMC | NA | B1 |
+    | S1_NaiveCytotoxicTCells | NaiveCytotoxicTCells | S1 | 3000 | threeprime | cDNA | 3primeGEX | 10XGenomics | G2 | CD8p_CD45RApNaiveCytotoxicTCells | PBMC | NA | B1 |
 
     The VDJType column would either be `T cell` or `B cell` if VDJ sequencing was also done on these sample, if not the column value will be `NA`.
 
@@ -62,8 +62,8 @@ The parameters file is divided into four sections.
     The reference genome files for GEX and VDJ analysis can be downloaded from the 10X Genomics website using the links mentioned below:
 
     ```
-    GEX reference: http://cf.10xgenomics.com/supp/cell-exp/refdata-cellranger-GRCh38-3.0.0.tar.gz
-    VDJ reference: http://cf.10xgenomics.com/supp/cell-vdj/refdata-cellranger-vdj-GRCh38-alts-ensembl-3.1.0.tar.gz
+    GEX reference: https://cf.10xgenomics.com/supp/cell-exp/refdata-gex-GRCh38-2020-A.tar.gz
+    VDJ reference: https://cf.10xgenomics.com/supp/cell-vdj/refdata-cellranger-vdj-GRCh38-alts-ensembl-4.0.0.tar.gz
     ```
 
     iii. Path to folder containing FASTQ files

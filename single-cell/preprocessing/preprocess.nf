@@ -3,19 +3,18 @@
 count_dirs = Channel.fromPath(params.input.count_dir)
 sample_list = Channel.from(params.input.sample_list)
 nmad_val = Channel.from(params.preprocess.nmads)
-gex_metadata = Channel.from(params.processmeta.gex_metadata)
-vdj_metadata = Channel.from(params.processmeta.vdj_metadata)
+gex_metadata = Channel.fromPath(params.processmeta.gex_metadata)
+vdj_metadata = Channel.fromPath(params.processmeta.vdj_metadata)
 vdj_meta = Channel.from(params.processmeta.vdj)
 //Load counts from cellranger output and filter out low quality cells
 process QCFilter {
   echo false
-  module 'R/3.6.1-foss-2016b-fh2'
-  label 'gizmo'
-  scratch "$task.scratch"
+  module 'R/4.0.2-foss-2019b'
+  label 'low_mem'
   input:
     val count_dir from count_dirs
     each sample from sample_list
-    val meta_file from gex_metadata
+    path meta_file from gex_metadata
     val nmad from nmad_val
 
   output:
@@ -23,36 +22,51 @@ process QCFilter {
     path "${sample}_sce_raw.rds" into sce_raw
 
   script:
-    uuid = UUID.randomUUID().toString().substring(0,7)
     """
     #!/usr/bin/env Rscript
     library(scran)
     library(scater)
-    library(monocle3)
-    library(Seurat)
+    #library(Seurat)
     library(tidyverse)
     library(DropletUtils)
     set.seed(12357)
+    ## Load metadata and grab metadata information
+    meta <- read_csv("${meta_file}") %>% 
+            filter(library_id == "${sample}" & str_detect(locus, "GEX"))
+    library_id <- meta %>%
+                  pull(library_id) %>%
+                  unique()
     ## Load in sample data
-    sce <- read10xCounts(paste("${count_dir}", "${sample}", "outs", "filtered_feature_bc_matrix", sep="/"))
+    sce <- read10xCounts(paste("${count_dir}", library_id, "outs", "filtered_feature_bc_matrix", sep="/"))
     sce\$Sample <- "${sample}"
+    ## Add metadata to colData
     saveRDS(sce, "${sample}_sce_raw.rds")
     ## Quantify number of cells with low library size, gene count and high mitochondrial expression
-    is_mito <- grepl(rowData(sce)\$Symbol, pattern= "^MT-")
-    qc_df <- perCellQCMetrics(sce, subsets=list(mitochondrial= is_mito))
-    discard <- quickPerCellQC(qc_df, percent_subsets=c("subsets_mitochondrial_percent"), nmad=${nmad}) 
-    #discard_summary <- discard %>% as_tibble() %>% summarize(low_lib_size = sum(low_lib_size), low_n_features = sum(low_n_features), 
-    #                          high_subsets_mitochondrial_percent = sum(high_subsets_mitochondrial_percent), discard = sum(discard)) %>% add_column(sample = "${sample}")
-    qc_tibble <- qc_df %>% as_tibble() %>% rowid_to_column()
-    discard_tibble <- discard %>% as_tibble() %>% rowid_to_column() %>% dplyr::select(rowid, discard)
-    qc_tibble <- left_join(qc_tibble, discard_tibble, by = "rowid") %>% add_column(sample = "${sample}")
+    is_mito <- grepl(rowData(sce)\$Symbol, 
+                     pattern= "^MT-")
+    qc_df <- perCellQCMetrics(sce, 
+                              subsets=list(mitochondrial= is_mito))
+    discard <- quickPerCellQC(qc_df, 
+                              percent_subsets=c("subsets_mitochondrial_percent"), 
+                              nmad=${nmad}) 
+    qc_tibble <- qc_df %>% 
+                 as_tibble() %>% 
+                 rowid_to_column()
+    discard_tibble <- discard %>% 
+                      as_tibble() %>% 
+                      rowid_to_column() %>% 
+                      dplyr::select(rowid, discard)
+    qc_tibble <- left_join(qc_tibble, discard_tibble, by = "rowid") %>% 
+                 dplyr::mutate(sample = "${sample}")
     ## Filter low QC cells
     sce <- sce[,!discard\$discard]
-    is_mito <- grepl(rowData(sce)\$Symbol, pattern= "^MT-")
-    flt_qc_df <- perCellQCMetrics(sce, subsets=list(mitochondrial= is_mito))
+    is_mito <- grepl(rowData(sce)\$Symbol, 
+                     pattern= "^MT-")
+    flt_qc_df <- perCellQCMetrics(sce, 
+                                  subsets=list(mitochondrial= is_mito))
     ## Load metadata and grab metadata information
-    meta <- read_csv("${meta_file}") %>% filter(library_id == "${sample}" & str_detect(locus, "GEX"))
-    lib_info <- colData(sce) %>% as_tibble()
+    lib_info <- colData(sce) %>% 
+                as_tibble()
     lib_info <- left_join(lib_info, meta, by = c("Sample"  = "library_id"))
     ## Add metadata to CDS object for reanalysis
     metadata(sce)\$perCellQCMetrics_raw <- qc_df
@@ -60,6 +74,7 @@ process QCFilter {
     metadata(sce)\$perCellQCMetrics_filtered <- flt_qc_df
     metadata(sce)\$study_info <- lib_info
     metadata(sce)\$Sample <- "${sample}"
+    metadata(sce)\$meta <- meta
     ## Save RDS file
     saveRDS(sce, "${sample}_sce.rds")
     """
@@ -67,20 +82,19 @@ process QCFilter {
 //Add VDJ data when available
 process VDJMetadata {
   echo false
-  module 'R/3.6.1-foss-2016b-fh2'
-  scratch "$task.scratch"
-  label "gizmo"
+  module 'R/4.0.2-foss-2019b'
+  label "low_mem"
 
   input:
     each sce from sce_obj
     //val vdj from vdj_meta
-    val meta_file from vdj_metadata
+    path meta_file from vdj_metadata
     
   output:
     path "${sce.getName()}" into asce_obj
 
   script:
-  sample = sce.getSimpleName() - ~/_\w+$/
+  sample = sce.getSimpleName() 
   if( "$params.processmeta.vdj" != false )
     """
     #!/usr/bin/env Rscript
@@ -90,52 +104,17 @@ process VDJMetadata {
     library(DropletUtils)
     set.seed(12357)  
     sce <- readRDS("${sce}")
-    vdj <- read_csv("${meta_file}") %>% filter(repoName == metadata(sce)\$Sample & str_detect(locus, "VDJ"))
-    vdj_table <- colData(sce) %>% as_tibble()
-
-    collapseClonotype <- function(clonotypes, vdj_type) {
-      if (is.null(vdj_type)) {
-      clonotypes <- clonotypes %>% filter(high_confidence == TRUE & is_cell == TRUE & productive == TRUE) %>% 
-              group_by(barcode) %>% summarize(is_cell = first(is_cell), contig_id = paste(contig_id, collapse = ";"), 
-                                              high_confidence = first(high_confidence), `length` = paste(`length`, collapse = ";"),
-                                              chain = paste(chain, collapse = ";"), v_gene = paste(v_gene, collapse = ";"),
-                                              j_gene = paste(j_gene, collapse = ";"), c_gene = paste(c_gene, collapse = ";"),
-                                              full_length = first(full_length), productive = first(productive),
-                                              cdr3 = paste(cdr3, collapse = ";"), cdr3_nt = paste(cdr3_nt, collapse=";"),
-                                              reads = paste(reads, collapse = ";"), umis = paste(umis, collapse = ";"), 
-                                              raw_clonotype_id = first(raw_clonotype_id), cell_type = paste(cell_type, collapse = ";"))
-      } else {
-      clonotypes <- clonotypes %>% filter(high_confidence == TRUE & is_cell == TRUE & productive == TRUE) %>% 
-              group_by(barcode) %>% summarize(is_cell = first(is_cell), contig_id = paste(contig_id, collapse = ";"), 
-                                              high_confidence = first(high_confidence), `length` = paste(`length`, collapse = ";"),
-                                              chain = paste(chain, collapse = ";"), v_gene = paste(v_gene, collapse = ";"),
-                                              j_gene = paste(j_gene, collapse = ";"), c_gene = paste(c_gene, collapse = ";"),
-                                              full_length = first(full_length), productive = first(productive),
-                                              cdr3 = paste(cdr3, collapse = ";"), cdr3_nt = paste(cdr3_nt, collapse=";"),
-                                              reads = paste(reads, collapse = ";"), umis = paste(umis, collapse = ";"), 
-                                              raw_clonotype_id = first(raw_clonotype_id)) %>% add_column(cell_type = vdj_type)
-    }
-    return(clonotypes)
-    }
-
-    mergeVDJ <- function(vdj_file, vdj_type) {
-      clonotypes <- read_csv(vdj_file)
-      clonotypes <- collapseClonotype(clonotypes, vdj_type)
-      return(clonotypes)
-    }
+    vdj <- read_csv("${meta_file}") %>% 
+           filter(sampleName == metadata(sce)\$Sample & str_detect(locus, "VDJ"))
+    vdj_table <- colData(sce) %>% 
+                 as_tibble() %>%
+                 mutate(id_barcode = str_extract(Barcode, "[ACGT]+"),
+                        repertoire_id = metadata(sce)\$Sample)
 
     if (dim(vdj)[1] == 0) {
-      metadata(sce)\$doublet_barcodes <- NULL
       metadata(sce)\$vdj_table <- NULL
-      metadata(sce)\$vdj_raw <- NULL
     } else {
-      clonotypes <- map2(vdj\$vdj_sequences, vdj\$VDJType, mergeVDJ) %>% reduce(rbind) %>% collapseClonotype(vdj_type=NULL)
-      vdj_table <- left_join(vdj_table, clonotypes, by=c("Barcode" = "barcode"))
-      doublet_barcode <- vdj_table %>% filter(str_detect(cell_type, "B cell") & str_detect(cell_type, "T Cell")) %>% select(Barcode) %>% add_column(Method = "VDJ data")
-      metadata(sce)\$doublet_barcodes <- doublet_barcode
       metadata(sce)\$vdj_table <- vdj_table
-      vdj_raw <- vdj\$vdj_sequences %>% map(read_csv) %>% reduce(rbind)
-      metadata(sce)\$vdj_raw <- vdj_raw 
     }
     saveRDS(sce, "${sce.getName()}")
     """
@@ -159,17 +138,16 @@ asce_obj.into{sce_write; sce_plotQC; sce_plotVDJ}
 // Wtite SCE objects into different formats including monocle3, Seurat and 10X count matrix
 process writeSCE{
   echo false
-  module 'R/3.6.1-foss-2016b-fh2'
-  scratch "$task.scratch"
+  module 'R/4.0.2-foss-2019b'
+  module 'monocle3/0.2.2-foss-2019b-R-4.0.2'
   publishDir "$params.output.folder/Preprocess/CDS", mode : "move"
-  label 'gizmo_largenode'
+  label 'local'
   input:
     each sce from sce_write
   output:
     path "${sample}_sce.rds" into sce_out
     path "${sample}_filtered_matrix" into mtx_obj
     path "${sample}_filtered_monocle3_cds.rds" into mon_obj
-    path "${sample}_filtered_seurat_cds.rds" into seu_obj
 
   script:
     sample = sce.getSimpleName() - ~/_sce$/
@@ -178,7 +156,7 @@ process writeSCE{
     library(scran)
     library(scater)
     library(monocle3)
-    library(Seurat)
+    #library(Seurat)
     library(tidyverse)
     library(DropletUtils)
     set.seed(12357)
@@ -190,34 +168,40 @@ process writeSCE{
     write10xCounts("${sample}_filtered_matrix", counts(sce), barcodes = sce\$Barcode, 
                    gene.id=rownames(sce), gene.symbol=rowData(sce)\$Symbol)
     #Write monocle CDS
-    cell_metadata <- colData(sce)
+    cell_metadata <- colData(sce) %>% 
+                     as_tibble()
+    study_metadata <- metadata(sce)\$meta
+    cell_metadata <- left_join(cell_metadata, study_metadata, by = c("Sample" = "library_id")) %>%
+                     as.data.frame()
     row.names(cell_metadata) <- cell_metadata\$Barcode
     gene_metadata <- rowData(sce)
     colnames(gene_metadata) <- c("ID", "gene_short_name", "Type")
     matrix <- counts(sce)
     cds <- new_cell_data_set(matrix, cell_metadata=cell_metadata, gene_metadata=gene_metadata)
-    metadata(cds) <- metadata(sce)
+    metadata(cds)\$vdj_table <- metadata(sce)\$vdj_table
+    metadata(cds)\$Sample <- "${sample}"
     saveRDS(cds, "${sample}_filtered_monocle3_cds.rds")
     #Write Seurat CDS
-    counts <- assay(sce, "counts")
-    libsizes <- colSums(counts)
-    size.factors <- libsizes/mean(libsizes)
-    logcounts(sce) <- as.matrix(log2(t(t(counts)/size.factors) + 1))
-    colnames(sce) <- sce\$Barcode
-    seu_cds <- as.Seurat(sce, counts = "counts", data = "logcounts")
-    Misc(seu_cds, slot="perCellQCMetrics") <- metadata(sce)\$perCellQCMetrics_filtered
-    Misc(seu_cds, slot="study_info") <- metadata(sce)\$study_info
-    Misc(seu_cds, slot="doublet_barcode") <- metadata(sce)\$doublet_barcode
-    Misc(seu_cds, slot="vdj_raw") <- metadata(sce)\$vdj_raw
-    Misc(seu_cds, slot="vdj_raw_keys") <- metadata(sce)\$vdj_raw_keys
-    saveRDS(seu_cds, "${sample}_filtered_seurat_cds.rds")
+    #counts <- assay(sce, "counts")
+    #libsizes <- colSums(counts)
+    #size.factors <- libsizes/mean(libsizes)
+    #logcounts(sce) <- as.matrix(log2(t(t(counts)/size.factors) + 1))
+    #colnames(sce) <- sce\$Barcode
+    #seu_cds <- as.Seurat(sce, counts = "counts", data = "logcounts")
+    #Misc(seu_cds, slot="perCellQCMetrics") <- metadata(sce)\$perCellQCMetrics_filtered
+    ##Misc(seu_cds, slot="study_info") <- metadata(sce)\$study_info
+    #Misc(seu_cds, slot="doublet_barcode") <- metadata(sce)\$doublet_barcode
+    #Misc(seu_cds, slot="vdj_raw") <- metadata(sce)\$vdj_raw
+    #Misc(seu_cds, slot="vdj_raw_keys") <- metadata(sce)\$vdj_raw_keys
+    #saveRDS(seu_cds, "${sample}_filtered_seurat_cds.rds")
     """    
 }
 // Summarize and plot sample QC results from the study
 process PlotQC {
   echo false
+  label 'local'
   publishDir "$params.output.folder/Preprocess/QCReports", mode : 'move'
-  module 'R/3.6.1-foss-2016b-fh2'
+  module 'R/4.0.2-foss-2019b'
   input:
     val raw_cds_list from sce_raw.collect()
     val flt_cds_list from sce_plotQC.collect()
