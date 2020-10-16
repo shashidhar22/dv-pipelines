@@ -1,7 +1,7 @@
 #!/usr/bin/env nextflow
 
 //params.reads = "$params.input.fastq_path/*/*_L00{1,2}_R{1,2}_00{1,2,3,4}.fastq.gz"
-//fastq_path = Channel.fromSRA('ERP105213', apiKey: '2e31be614c8557990ddc51e45325d28b1008')
+//fastq_path = Channel.fromSRA('ERP105213')
 fasta_path = Channel.fromPath(params.input.fasta_path)
 out_path = Channel.fromPath(params.output.folder)
 chrom_path = Channel.fromPath(params.input.chrom_path)
